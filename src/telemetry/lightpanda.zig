@@ -4,10 +4,13 @@ const ArenAallocator = std.heap.ArenaAllocator;
 
 const Loop = @import("jsruntime").Loop;
 const Client = @import("asyncio").Client;
+const Event = @import("telemetry.zig").Event;
+const RunMode = @import("../app.zig").RunMode;
 
 const log = std.log.scoped(.telemetry);
 
-const URL = "https://httpbin.io/post";
+const DATA_VERSION = 1;
+const URL = "https://1df7a24e33.endpoints.dev";
 
 pub const LightPanda = struct {
     uri: std.Uri,
@@ -34,15 +37,15 @@ pub const LightPanda = struct {
         self.client_context_pool.deinit();
     }
 
-    pub fn send(self: *LightPanda, iid: ?[]const u8, eid: []const u8, event: anytype) !void {
+    pub fn send(self: *LightPanda, iid: ?[]const u8, run_mode: RunMode, event: *const Event) !void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         errdefer arena.deinit();
 
         const resp_header_buffer = try arena.allocator().alloc(u8, 4096);
-        const body = try std.json.stringifyAlloc(arena.allocator(), .{
+        const body = try std.json.stringifyAlloc(arena.allocator(), EventWrap{
             .iid = iid,
-            .eid = eid,
             .event = event,
+            .run_mode = run_mode,
         }, .{});
 
         const sending = try self.sending_pool.create();
@@ -159,38 +162,39 @@ const Sending = struct {
     }
 };
 
-// // wraps a telemetry event so that we can serialize it to plausible's event endpoint
-// const EventWrap = struct {
-//     iid: ?[]const u8,
-//     eid: []const u8,
-//     event: *const Event,
+// wraps a telemetry event so that we can serialize it to plausible's event endpoint
+const EventWrap = struct {
+    iid: ?[]const u8,
+    event: *const Event,
+    run_mode: RunMode,
 
-//     pub fn jsonStringify(self: *const EventWrap, jws: anytype) !void {
-//         try jws.beginObject();
-//         try jws.objectField("iid");
-//         try jws.write(self.iid);
-//         try jws.objectField("eid");
-//         try jws.write(self.eid);
-//         try jws.objectField("event");
-//         try jws.write(@tagName(self.event.*));
-//         try jws.objectField("props");
-//         switch (self.event) {
-//             inline else => |props| try jws.write(props),
-//         }
-//         try jws.endObject();
-//     }
-// };
+    const builtin = @import("builtin");
+    const build_info = @import("build_info");
 
-// const testing = std.testing;
-// test "telemetry: lightpanda json event" {
-//     const json = try std.json.stringifyAlloc(testing.allocator, EventWrap{
-//         .iid = "1234",
-//         .eid = "abc!",
-//         .event = .{ .run = .{ .mode = .serve, .version = "over 9000!" } }
-//     }, .{});
-//     defer testing.allocator.free(json);
-
-//     try testing.expectEqualStrings(
-//         \\{"event":"run","iid""1234","eid":"abc!","props":{"version":"over 9000!","mode":"serve"}}
-//     , json);
-// }
+    pub fn jsonStringify(self: *const EventWrap, jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("iid");
+        try jws.write(self.iid);
+        try jws.objectField("event");
+        try jws.write(@tagName(self.event.*));
+        try jws.objectField("mode");
+        try jws.write(self.run_mode);
+        try jws.objectField("version");
+        try jws.write(DATA_VERSION);
+        try jws.objectField("os");
+        try jws.write(builtin.os.tag);
+        try jws.objectField("version");
+        try jws.write(build_info.git_commit);
+        try jws.objectField("arch");
+        try jws.write(builtin.cpu.arch);
+        switch (self.event.*) {
+            .run => {},
+            .navigate => {},
+            .flag => |f| {
+                try jws.objectField("flag");
+                try jws.write(f);
+            },
+        }
+        try jws.endObject();
+    }
+};
