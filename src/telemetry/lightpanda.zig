@@ -6,10 +6,10 @@ const Loop = @import("jsruntime").Loop;
 const Client = @import("asyncio").Client;
 const Event = @import("telemetry.zig").Event;
 const RunMode = @import("../app.zig").RunMode;
+const builtin = @import("builtin");
+const build_info = @import("build_info");
 
 const log = std.log.scoped(.telemetry);
-
-const DATA_VERSION = 1;
 const URL = "https://lightpanda.io/browser-stats";
 
 pub const LightPanda = struct {
@@ -37,15 +37,18 @@ pub const LightPanda = struct {
         self.client_context_pool.deinit();
     }
 
-    pub fn send(self: *LightPanda, iid: ?[]const u8, run_mode: RunMode, event: *const Event) !void {
+    pub fn send(self: *LightPanda, iid: ?[]const u8, run_mode: RunMode, event: Event) !void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         errdefer arena.deinit();
 
         const resp_header_buffer = try arena.allocator().alloc(u8, 4096);
-        const body = try std.json.stringifyAlloc(arena.allocator(), EventWrap{
+        const body = try std.json.stringifyAlloc(arena.allocator(), .{
             .iid = iid,
-            .event = event,
             .run_mode = run_mode,
+            .os = builtin.os.tag,
+            .aarch = builtin.cpu.arch,
+            .version = build_info.git_commit,
+            .event = std.meta.activeTag(event),
         }, .{});
 
         const sending = try self.sending_pool.create();
@@ -159,42 +162,5 @@ const Sending = struct {
     pub fn deinit(self: *Sending) void {
         self.arena.deinit();
         self.request.deinit();
-    }
-};
-
-// wraps a telemetry event so that we can serialize it to plausible's event endpoint
-const EventWrap = struct {
-    iid: ?[]const u8,
-    event: *const Event,
-    run_mode: RunMode,
-
-    const builtin = @import("builtin");
-    const build_info = @import("build_info");
-
-    pub fn jsonStringify(self: *const EventWrap, jws: anytype) !void {
-        try jws.beginObject();
-        try jws.objectField("iid");
-        try jws.write(self.iid);
-        try jws.objectField("event");
-        try jws.write(@tagName(self.event.*));
-        try jws.objectField("mode");
-        try jws.write(self.run_mode);
-        try jws.objectField("version");
-        try jws.write(DATA_VERSION);
-        try jws.objectField("os");
-        try jws.write(builtin.os.tag);
-        try jws.objectField("version");
-        try jws.write(build_info.git_commit);
-        try jws.objectField("arch");
-        try jws.write(builtin.cpu.arch);
-        switch (self.event.*) {
-            .run => {},
-            .navigate => {},
-            .flag => |f| {
-                try jws.objectField("flag");
-                try jws.write(f);
-            },
-        }
-        try jws.endObject();
     }
 };
