@@ -10,7 +10,7 @@ const builtin = @import("builtin");
 const build_info = @import("build_info");
 
 const log = std.log.scoped(.telemetry);
-const URL = "https://lightpanda.io/browser-stats";
+const URL = "https://telemetry.lightpanda.io";
 
 pub const LightPanda = struct {
     uri: std.Uri,
