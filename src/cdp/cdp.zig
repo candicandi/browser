@@ -342,7 +342,7 @@ pub fn Command(comptime CDP_T: type, comptime Sender: type) type {
         pub fn sendResult(self: *Self, result: anytype, opts: SendResultOpts) !void {
             return self.sender.sendJSON(.{
                 .id = self.id,
-                .result = if (comptime @typeInfo(@TypeOf(result)) == .Null) struct {}{} else result,
+                .result = if (comptime @typeInfo(@TypeOf(result)) == .null) struct {}{} else result,
                 .sessionId = if (opts.include_session_id) self.session_id else null,
             });
         }
@@ -354,7 +354,7 @@ pub fn Command(comptime CDP_T: type, comptime Sender: type) type {
             // Events ALWAYS go to the client. self.sender should not be used
             return self.cdp.sendJSON(.{
                 .method = method,
-                .params = if (comptime @typeInfo(@TypeOf(p)) == .Null) struct {}{} else p,
+                .params = if (comptime @typeInfo(@TypeOf(p)) == .null) struct {}{} else p,
                 .sessionId = opts.session_id,
             });
         }

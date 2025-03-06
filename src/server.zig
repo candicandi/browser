@@ -1442,7 +1442,7 @@ test "Client: close message" {
 // So we can only "fuzz" on a per-message basis.
 // But for websocket, we can fuzz _all_ the messages together.
 test "Client: fuzz" {
-    var prng = std.rand.DefaultPrng.init(blk: {
+    var prng = std.Random.DefaultPrng.init(blk: {
         var seed: u64 = undefined;
         try std.posix.getrandom(std.mem.asBytes(&seed));
         break :blk seed;
@@ -1804,8 +1804,8 @@ fn createTestClient() !TestClient {
     const stream = try std.net.tcpConnectToAddress(address);
 
     const timeout = std.mem.toBytes(posix.timeval{
-        .tv_sec = 2,
-        .tv_usec = 0,
+        .sec = 2,
+        .usec = 0,
     });
     try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout);
     try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout);

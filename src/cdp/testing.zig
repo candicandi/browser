@@ -113,7 +113,7 @@ const TestContext = struct {
 
     pub fn processMessage(self: *TestContext, msg: anytype) !void {
         var json_message: []const u8 = undefined;
-        if (@typeInfo(@TypeOf(msg)) != .Pointer) {
+        if (@typeInfo(@TypeOf(msg)) != .pointer) {
             json_message = try std.json.stringifyAlloc(self.arena.allocator(), msg, .{});
         } else {
             // assume this is a string we want to send as-is, if it isn't, we'll
