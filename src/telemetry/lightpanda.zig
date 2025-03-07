@@ -15,26 +15,20 @@ const URL = "https://telemetry.lightpanda.io";
 pub const LightPanda = struct {
     uri: std.Uri,
     io: Client.IO,
-    client: Client,
     allocator: Allocator,
     sending_pool: std.heap.MemoryPool(Sending),
-    client_context_pool: std.heap.MemoryPool(Client.Ctx),
 
     pub fn init(allocator: Allocator, loop: *Loop) !LightPanda {
         return .{
             .allocator = allocator,
             .io = Client.IO.init(loop),
-            .client = .{ .allocator = allocator },
             .uri = std.Uri.parse(URL) catch unreachable,
             .sending_pool = std.heap.MemoryPool(Sending).init(allocator),
-            .client_context_pool = std.heap.MemoryPool(Client.Ctx).init(allocator),
         };
     }
 
     pub fn deinit(self: *LightPanda) void {
-        self.client.deinit();
         self.sending_pool.deinit();
-        self.client_context_pool.deinit();
     }
 
     pub fn send(self: *LightPanda, iid: ?[]const u8, run_mode: RunMode, event: Event) !void {
@@ -44,12 +38,13 @@ pub const LightPanda = struct {
         const resp_header_buffer = try arena.allocator().alloc(u8, 4096);
         const body = try std.json.stringifyAlloc(arena.allocator(), .{
             .iid = iid,
-            .run_mode = run_mode,
+            .driver = if (std.meta.activeTag(event) == .navigate) "cdp" else null,
+            .mode = run_mode,
             .os = builtin.os.tag,
-            .aarch = builtin.cpu.arch,
+            .arch = builtin.cpu.arch,
             .version = build_info.git_commit,
             .event = std.meta.activeTag(event),
-        }, .{});
+        }, .{ .emit_null_optional_fields = false });
 
         const sending = try self.sending_pool.create();
         errdefer self.sending_pool.destroy(sending);
@@ -57,33 +52,31 @@ pub const LightPanda = struct {
         sending.* = .{
             .body = body,
             .arena = arena,
+            .ctx = undefined,
             .lightpanda = self,
-            .request = try self.client.create(.POST, self.uri, .{
-                .server_header_buffer = resp_header_buffer,
-            }),
+            .request = undefined,
+            .client = .{ .allocator = self.allocator },
         };
+        sending.request = try sending.client.create(.POST, self.uri, .{
+            .server_header_buffer = resp_header_buffer,
+        });
         errdefer sending.request.deinit();
 
-        const ctx = try self.client_context_pool.create();
-        errdefer self.client_context_pool.destroy(ctx);
+        sending.ctx = try Client.Ctx.init(&self.io, &sending.request);
+        errdefer sending.ctx.deinit();
 
-        ctx.* = try Client.Ctx.init(&self.io, &sending.request);
-        ctx.userData = sending;
-
-        try self.client.async_open(
+        try sending.client.async_open(
             .POST,
             self.uri,
             .{ .server_header_buffer = resp_header_buffer },
-            ctx,
+            &sending.ctx,
             onRequestConnect,
         );
     }
 
-    fn handleError(sending: *Sending, ctx: *Client.Ctx, err: anyerror) anyerror!void {
+    fn handleError(ctx: *Client.Ctx, err: anyerror) anyerror!void {
+        const sending: *Sending = @fieldParentPtr("ctx", ctx);
         const lightpanda = sending.lightpanda;
-
-        ctx.deinit();
-        lightpanda.client_context_pool.destroy(ctx);
 
         sending.deinit();
         lightpanda.sending_pool.destroy(sending);
@@ -91,62 +84,49 @@ pub const LightPanda = struct {
     }
 
     fn onRequestConnect(ctx: *Client.Ctx, res: anyerror!void) anyerror!void {
-        const sending: *Sending = @ptrCast(@alignCast(ctx.userData));
-        res catch |err| return handleError(sending, ctx, err);
+        const sending: *Sending = @fieldParentPtr("ctx", ctx);
+        res catch |err| return handleError(ctx, err);
 
         ctx.req.transfer_encoding = .{ .content_length = sending.body.len };
         return ctx.req.async_send(ctx, onRequestSend) catch |err| {
-            return handleError(sending, ctx, err);
+            return handleError(ctx, err);
         };
     }
 
     fn onRequestSend(ctx: *Client.Ctx, res: anyerror!void) anyerror!void {
-        const sending: *Sending = @ptrCast(@alignCast(ctx.userData));
-        res catch |err| return handleError(sending, ctx, err);
+        const sending: *Sending = @fieldParentPtr("ctx", ctx);
+        res catch |err| return handleError(ctx, err);
 
         return ctx.req.async_writeAll(sending.body, ctx, onRequestWrite) catch |err| {
-            return handleError(sending, ctx, err);
+            return handleError(ctx, err);
         };
     }
 
     fn onRequestWrite(ctx: *Client.Ctx, res: anyerror!void) anyerror!void {
-        const sending: *Sending = @ptrCast(@alignCast(ctx.userData));
-        res catch |err| return handleError(sending, ctx, err);
+        res catch |err| return handleError(ctx, err);
         return ctx.req.async_finish(ctx, onRequestFinish) catch |err| {
-            return handleError(sending, ctx, err);
+            return handleError(ctx, err);
         };
     }
 
     fn onRequestFinish(ctx: *Client.Ctx, res: anyerror!void) anyerror!void {
-        const sending: *Sending = @ptrCast(@alignCast(ctx.userData));
-        res catch |err| return handleError(sending, ctx, err);
+        res catch |err| return handleError(ctx, err);
         return ctx.req.async_wait(ctx, onRequestWait) catch |err| {
-            return handleError(sending, ctx, err);
+            return handleError(ctx, err);
         };
     }
 
     fn onRequestWait(ctx: *Client.Ctx, res: anyerror!void) anyerror!void {
-        const sending: *Sending = @ptrCast(@alignCast(ctx.userData));
-        res catch |err| return handleError(sending, ctx, err);
+        const sending: *Sending = @fieldParentPtr("ctx", ctx);
+        res catch |err| return handleError(ctx, err);
 
         const lightpanda = sending.lightpanda;
 
         defer {
-            ctx.deinit();
-            lightpanda.client_context_pool.destroy(ctx);
-
             sending.deinit();
             lightpanda.sending_pool.destroy(sending);
         }
 
-        var buffer: [2048]u8 = undefined;
-        const reader = ctx.req.reader();
-        while (true) {
-            const n = reader.read(&buffer) catch 0;
-            if (n == 0) {
-                break;
-            }
-        }
         if (ctx.req.response.status != .ok) {
             log.info("invalid response: {d}", .{@intFromEnum(ctx.req.response.status)});
         }
@@ -154,13 +134,17 @@ pub const LightPanda = struct {
 };
 
 const Sending = struct {
+    ctx: Client.Ctx,
+    client: Client,
     body: []const u8,
     request: Client.Request,
     lightpanda: *LightPanda,
     arena: std.heap.ArenaAllocator,
 
     pub fn deinit(self: *Sending) void {
+        self.ctx.deinit();
         self.arena.deinit();
         self.request.deinit();
+        self.client.deinit();
     }
 };
